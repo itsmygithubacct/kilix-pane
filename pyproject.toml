@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kilix-pane"
+version = "0.1.0"
+description = "Kilix-native terminal interfaces: pixels beneath real text in Kilix, characters everywhere else"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+authors = [{name = "kilix-pane contributors"}]
+# kitty-input (python/) is required; soft-raster and kitty-frame-presenter
+# enable the pixel backend. None of them is on a package index, so they are
+# found at run time (see kilix_pane.deps) rather than declared here.
+dependencies = []
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Terminals",
+]
+
+[project.urls]
+Repository = "https://github.com/itsmygithubacct/kilix-pane.git"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
