@@ -1,13 +1,23 @@
 """A tiny VT replayer for tests: enough of the protocol to check our output.
 
 It understands exactly what `screen.py` emits -- CUP, ED 2, SGR, DECSCUSR,
-cursor show/hide, save/restore cursor, APC graphics (skipped) -- and places
-characters with the same width rules. Anything else fails the test, so the
-writer cannot quietly start emitting sequences nobody checked.
+cursor show/hide, save/restore cursor, APC graphics -- and places characters
+with the same width rules. Anything else fails the test, so the writer cannot
+quietly start emitting sequences nobody checked.
+
+Graphics are kept as the set of placed image ids, as a terminal would: `a=T`
+and `a=p` place, `a=d` deletes, and ED 2 deletes every placement (kitty's
+erase-in-display clears the graphics manager). An `a=f` frame edit sent to an
+image with no placement is counted in `lost_edits`: nothing would show it. A
+shared-memory transmission (`t=s`) is unlinked once read, as the terminal does,
+so the presenter's slots come free.
 """
 
 from __future__ import annotations
 
+import base64
+import ctypes
+import ctypes.util
 import re
 
 from kilix_pane.cells import char_width
@@ -23,6 +33,8 @@ class VT:
         self.x = self.y = 0
         self.cursor_visible = True
         self.images = 0
+        self.placements: set[str] = set()
+        self.lost_edits = 0
 
     def feed(self, data: str) -> None:
         i = 0
@@ -30,6 +42,7 @@ class VT:
             if data.startswith("\x1b_G", i):
                 end = data.index("\x1b\\", i)
                 self.images += 1
+                self._graphics(data[i + 3:end])
                 i = end + 2
                 continue
             if data.startswith("\x1b7", i) or data.startswith("\x1b8", i):
@@ -57,6 +70,7 @@ class VT:
             self.y, self.x = parts[0] - 1, parts[1] - 1
         elif final == "J" and params == "2":
             self.cells = [[" "] * self.width for _ in range(self.height)]
+            self.placements.clear()
         elif final == "m":
             pass
         elif final == "q" and intermediate == " ":
@@ -68,5 +82,27 @@ class VT:
         else:
             raise AssertionError(f"unexpected CSI {params!r}{intermediate!r}{final!r}")
 
+    def _graphics(self, body: str) -> None:
+        control, _, payload = body.partition(";")
+        keys = dict(item.split("=", 1) for item in control.split(",") if "=" in item)
+        action, image = keys.get("a", "t"), keys.get("i")
+        if action in ("T", "p"):
+            self.placements.add(image)
+        elif action == "f" and image not in self.placements:
+            self.lost_edits += 1
+        elif action == "d":
+            if keys.get("d", "a") in "aA":
+                self.placements.clear()
+            else:
+                self.placements.discard(image)
+        if keys.get("t") == "s" and payload:
+            _shm_unlink(base64.b64decode(payload))
+
     def text(self) -> str:
         return "\n".join("".join(row) for row in self.cells)
+
+
+def _shm_unlink(name: bytes) -> None:
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    libc.shm_unlink.argtypes = [ctypes.c_char_p]
+    libc.shm_unlink(name)   # gone already is fine

@@ -8,7 +8,7 @@ import unittest
 from kilix_pane import deps
 from kilix_pane.cells import Rect
 from kilix_pane.painter import Painter
-from kilix_pane.screen import PixelScreen
+from kilix_pane.screen import IMAGE_ID, PixelScreen
 from kilix_pane.theme import DARK
 
 from vt import VT
@@ -50,22 +50,58 @@ class Pixels(unittest.TestCase):
         centre = self.pixel(p, 1.5 * 8 + 4, 8 - 4)
         self.assertNotEqual(centre, DARK["surface"])
 
-    def test_pixel_screen_sends_image_then_text(self) -> None:
+    def test_pixel_screen_orders_clear_image_text(self) -> None:
+        # A repaint that clears goes before the image (the clear deletes
+        # placements); afterwards the image goes before the text on it.
         out: list[str] = []
         presenter = deps.find("kitty_frame_presenter")
-        screen = PixelScreen(out.append, presenter.module if presenter.ok else None)
-        p = self.painter()
-        p.text(2, 2, "hello", "ink")
-        rgb = bytes(p.canvas.rgb_bytes())
-        screen.present_frame(rgb, p.canvas.width, p.canvas.height, 20, 6, p.grid)
-        frame = out[-1]
-        self.assertLess(frame.index("\x1b_G"), frame.index("hello"))
-        self.assertIn("z=-1", frame)
+        screen = PixelScreen(out.append, presenter.module if presenter.ok else None,
+                             max_fps=0)
         vt = VT(20, 6)
-        vt.feed(frame)
-        self.assertEqual(vt.images, 1 if presenter.ok else 1)
-        self.assertIn("hello", vt.text())
+        for word, left in (("hello", 0), ("WORLD", 5)):
+            p = self.painter()
+            p.panel(Rect(left, 0, 6, 4))
+            p.text(2, 2, word, "ink")
+            rgb = bytes(p.canvas.rgb_bytes())
+            screen.present_frame(rgb, p.canvas.width, p.canvas.height, 20, 6, p.grid)
+            vt.feed(out[-1])
+            self.assertIn(word, vt.text())
+        first, second = out
+        self.assertLess(first.index("\x1b[2J"), first.index("\x1b_G"))
+        self.assertIn("z=-1", first)
+        self.assertNotIn("\x1b[2J", second)
+        self.assertLess(second.index("\x1b_G"), second.index("WORLD"))
+        self.assertEqual(vt.placements, {str(IMAGE_ID)})
         self.assertIn("a=d,d=I", screen.close())
+
+    def test_image_survives_every_repaint(self) -> None:
+        # ED 2 deletes image placements. A first frame, an edit, a repaint
+        # after invalidate and a resize must each leave the image placed, and
+        # no frame edit may go to an image the clear deleted.
+        presenter = deps.find("kitty_frame_presenter")
+        for module in ((presenter.module, None) if presenter.ok else (None,)):
+            with self.subTest(presenter=module is not None):
+                out: list[str] = []
+                screen = PixelScreen(out.append, module, max_fps=0)
+                self.addCleanup(screen.close)
+                vt = VT(24, 8)
+
+                def frame(columns: int, rows: int, word: str) -> None:
+                    p = self.painter(columns, rows)
+                    p.panel(Rect(1, 1, 10, 3))
+                    p.text(2, 2, word, "ink")
+                    screen.present_frame(bytes(p.canvas.rgb_bytes()), p.canvas.width,
+                                         p.canvas.height, columns, rows, p.grid)
+                    vt.feed(out[-1])
+                    self.assertIn(word, vt.text())
+                    self.assertEqual(vt.placements, {str(IMAGE_ID)}, word)
+                    self.assertEqual(vt.lost_edits, 0, word)
+
+                frame(20, 6, "first")
+                frame(20, 6, "edited")
+                screen.invalidate()
+                frame(20, 6, "again")
+                frame(24, 8, "resized")
 
 
 if __name__ == "__main__":

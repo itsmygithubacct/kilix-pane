@@ -86,12 +86,17 @@ class CellScreen:
     def invalidate(self) -> None:
         self.previous = None
 
+    def clears(self, grid: CellGrid) -> bool:
+        """Whether `diff(grid)` will start by clearing the whole screen."""
+        previous = self.previous
+        return (previous is None or previous.width != grid.width
+                or previous.height != grid.height)
+
     def diff(self, grid: CellGrid) -> str:
         """Output that turns the previous frame into `grid`."""
         out: list[str] = []
         previous = self.previous
-        full = (previous is None or previous.width != grid.width
-                or previous.height != grid.height)
+        full = self.clears(grid)
         if full:
             out.append("\x1b[0m\x1b[2J")
         current: Style | None = None
@@ -163,6 +168,14 @@ class PixelScreen(CellScreen):
 
     def present_frame(self, rgb: bytes, width: int, height: int,
                       columns: int, rows: int, grid: CellGrid) -> None:
+        # ED 2 deletes every image placement (kitty's screen_erase_in_display
+        # calls grman_clear), so a repaint that clears the screen goes out
+        # before the image, and the presenter must place a whole new image
+        # rather than edit the one the clear just deleted.
+        clears = self.clears(grid)
+        if clears and self.presenter is not None:
+            self.presenter.invalidate()
+        text = self.diff(grid)
         image = ""
         if self.presenter is not None:
             self.presenter.present(rgb, width, height, columns, rows)
@@ -170,9 +183,10 @@ class PixelScreen(CellScreen):
             image = self._sink.take()
         else:
             image = _direct_placement(rgb, width, height, columns, rows)
-        # The image first, then the text that sits on it: one write, so the
-        # terminal never shows a frame's text over the previous frame's art.
-        self.write("\x1b7" + image + "\x1b8" + self.diff(grid))
+        image = "\x1b7" + image + "\x1b8"
+        # Otherwise the image first, then the text that sits on it: one write,
+        # so the terminal never shows a frame's text over the previous art.
+        self.write(text + image if clears else image + text)
 
     def flush(self) -> None:
         """Release a frame the presenter's pacing held back."""

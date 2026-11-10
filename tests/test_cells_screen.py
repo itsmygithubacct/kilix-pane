@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import random
 import unittest
+from types import SimpleNamespace
 
 from kilix_pane.cells import CellGrid, Rect, Style, char_width, clip, control_free, text_width
-from kilix_pane.screen import CellScreen, _xterm256, sgr
+from kilix_pane.screen import IMAGE_ID, CellScreen, PixelScreen, _xterm256, sgr
 
 from vt import VT
 
@@ -100,6 +101,40 @@ class Diff(unittest.TestCase):
         self.assertTrue(out[0].endswith("\x1b[1;3H\x1b[6 q\x1b[?25h"))
         screen.present(CellGrid(5, 1))
         self.assertTrue(out[1].endswith("\x1b[?25l"))
+
+
+class _EditingPresenter:
+    """Unlike the real presenter, this one would edit its image across a
+    resize, so only PixelScreen can know the clear deleted it."""
+
+    def __init__(self, terminal, image_id, max_fps) -> None:
+        self.terminal, self.image_id, self.placed = terminal, image_id, False
+
+    def invalidate(self) -> None:
+        self.placed = False
+
+    def present(self, rgb, width, height, columns, rows) -> None:
+        action = "f" if self.placed else "T"
+        self.terminal.write(f"\x1b_Ga={action},i={self.image_id},q=2\x1b\\")
+        self.placed = True
+
+    def flush(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+class PixelOrder(unittest.TestCase):
+    def test_a_clearing_repaint_restarts_the_image(self) -> None:
+        out: list[str] = []
+        screen = PixelScreen(out.append, SimpleNamespace(FramePresenter=_EditingPresenter))
+        vt = VT(12, 4)
+        for columns, rows in ((10, 3), (10, 3), (12, 4)):
+            screen.present_frame(b"", 1, 1, columns, rows, CellGrid(columns, rows))
+            vt.feed(out[-1])
+            self.assertEqual(vt.placements, {str(IMAGE_ID)}, (columns, rows))
+            self.assertEqual(vt.lost_edits, 0, (columns, rows))
 
 
 class Colour(unittest.TestCase):
